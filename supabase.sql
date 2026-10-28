@@ -50,7 +50,7 @@ language sql stable security definer set search_path = public as $$
 $$;
 create or replace function public.convidado() returns boolean
 language sql stable security definer set search_path = public as $$
-  select public.sou_admin() or exists (select 1 from public.convidados where lower(email) = lower(coalesce(auth.jwt() ->> 'email', '')))
+  select auth.uid() is not null  -- acesso aberto: quem criou login e senha entra direto (limite de vagas continua valendo)
 $$;
 revoke all on function public.sou_admin(), public.vagas_livres(), public.convidado() from public, anon;
 grant execute on function public.sou_admin(), public.vagas_livres(), public.convidado() to authenticated;
@@ -113,8 +113,7 @@ begin
   end if;
   raise exception 'E-mail nao convidado';
 end $$;
-drop trigger if exists bloqueia_nao_convidado on auth.users;
-create trigger bloqueia_nao_convidado before insert on auth.users for each row execute function public.bloqueia_nao_convidado();
+drop trigger if exists bloqueia_nao_convidado on auth.users;  -- sem aprovação: o cadastro por e-mail e senha é livre
 
 create or replace function public.limita_membros() returns trigger
 language plpgsql security definer set search_path = public as $$
