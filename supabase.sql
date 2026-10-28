@@ -3,9 +3,9 @@
 
 create table if not exists public.config (
   id int primary key default 1 check (id = 1),
-  limite int not null default 10
+  limite int not null default 30
 );
-insert into public.config (id, limite) values (1, 10) on conflict (id) do nothing;
+insert into public.config (id, limite) values (1, 30) on conflict (id) do update set limite = 30;
 
 create table if not exists public.admins (email text primary key);
 -- >>> TROQUE pelo e-mail com o qual você vai entrar no app. Só este e-mail vê os perfis dos outros.
