@@ -143,3 +143,50 @@ alter table public.registros drop constraint if exists registros_tam;
 alter table public.registros add constraint registros_tam check (pg_column_size(dados) < 100000);
 alter table public.membros drop constraint if exists membros_tam;
 alter table public.membros add constraint membros_tam check (pg_column_size(dados) < 2000);
+
+-- ===== aprovação de acesso (pedido + aprovação pelo administrador) =====
+create table if not exists public.solicitacoes (
+  email text primary key,
+  nome text not null default '',
+  status text not null default 'pendente' check (status in ('pendente', 'aprovada', 'recusada')),
+  criado timestamptz not null default now(),
+  decidido timestamptz
+);
+alter table public.solicitacoes enable row level security;
+drop policy if exists solicitacoes_admin on public.solicitacoes;
+create policy solicitacoes_admin on public.solicitacoes for all to authenticated using (public.sou_admin()) with check (public.sou_admin());
+revoke all on public.solicitacoes from anon;
+grant select, insert, update, delete on public.solicitacoes to authenticated;
+
+create or replace function public.pedir_acesso(p_email text, p_nome text) returns text
+language plpgsql security definer set search_path = public as $$
+declare e text := lower(trim(coalesce(p_email, ''))); n text := left(trim(coalesce(p_nome, '')), 80); r text;
+begin
+  if e !~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$' or length(e) > 254 then raise exception 'E-mail invalido'; end if;
+  if (select count(*) from public.solicitacoes where status = 'pendente') >= 50 then raise exception 'Muitos pedidos'; end if;
+  insert into public.solicitacoes (email, nome) values (e, n)
+    on conflict (email) do update set nome = case when public.solicitacoes.status = 'pendente' then excluded.nome else public.solicitacoes.nome end;
+  select status into r from public.solicitacoes where email = e;
+  if r = 'aprovada' and not exists (select 1 from public.convidados where lower(email) = e) and not exists (select 1 from public.admins where lower(email) = e) then
+    insert into public.convidados (email) values (e) on conflict (email) do nothing;
+  end if;
+  return r;
+end $$;
+revoke all on function public.pedir_acesso(text, text) from public;
+grant execute on function public.pedir_acesso(text, text) to anon, authenticated;
+
+create or replace function public.decidir_acesso(p_email text, p_aprova boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare e text := lower(trim(coalesce(p_email, '')));
+begin
+  if not public.sou_admin() then raise exception 'Negado'; end if;
+  if p_aprova then
+    insert into public.convidados (email) values (e) on conflict (email) do nothing;
+    update public.solicitacoes set status = 'aprovada', decidido = now() where email = e;
+  else
+    delete from public.convidados where lower(email) = e;
+    update public.solicitacoes set status = 'recusada', decidido = now() where email = e;
+  end if;
+end $$;
+revoke all on function public.decidir_acesso(text, boolean) from public, anon;
+grant execute on function public.decidir_acesso(text, boolean) to authenticated;
