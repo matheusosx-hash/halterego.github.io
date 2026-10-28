@@ -295,3 +295,28 @@ select t, x, c from (values
   ('Cronômetro de treino', 'Toque em Iniciar treino e em Terminar quando acabar: o tempo total, com pausas, entra no card.', now() - interval '1 day'),
   ('Evolução na página inicial', 'A aba Evolução mostra semana e mês, recordes, sequência e cards prontos para os Stories.', now() - interval '2 days')
 ) v(t, x, c) where not exists (select 1 from public.novidades);
+-- ===== endurecimento: imagens só JPEG base64 válido, nome oficial reservado, limite de comentários =====
+create or replace function public.valida_post() returns trigger language plpgsql as $$
+begin
+  if new.imagem !~ '^data:image/jpeg;base64,[A-Za-z0-9+/=]+$' or char_length(new.imagem) > 400000 then raise exception 'Imagem invalida'; end if;
+  return new;
+end $$;
+drop trigger if exists valida_post on public.posts;
+create trigger valida_post before insert on public.posts for each row execute function public.valida_post();
+
+create or replace function public.valida_perfil_publico() returns trigger language plpgsql as $$
+begin
+  if new.foto is not null and (new.foto !~ '^data:image/jpeg;base64,[A-Za-z0-9+/=]+$' or char_length(new.foto) > 60000) then raise exception 'Foto invalida'; end if;
+  if lower(regexp_replace(new.nome, '\s', '', 'g')) like '%halterego%' then raise exception 'Nome reservado'; end if;
+  return new;
+end $$;
+drop trigger if exists valida_perfil_publico on public.perfil_publico;
+create trigger valida_perfil_publico before insert or update on public.perfil_publico for each row execute function public.valida_perfil_publico();
+
+create or replace function public.limita_comentarios() returns trigger language plpgsql as $$
+begin
+  if (select count(*) from public.comentarios where uid = new.uid and criado > now() - interval '24 hours') >= 100 then raise exception 'Limite de comentarios por dia'; end if;
+  return new;
+end $$;
+drop trigger if exists limita_comentarios on public.comentarios;
+create trigger limita_comentarios before insert on public.comentarios for each row execute function public.limita_comentarios();
