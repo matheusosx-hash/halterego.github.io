@@ -226,3 +226,73 @@ drop policy if exists posts_apagar on public.posts;
 create policy posts_apagar on public.posts for delete to authenticated using (uid = auth.uid() or public.sou_admin());
 revoke all on public.posts from anon;
 grant select, insert, delete on public.posts to authenticated;
+-- ===== mini rede social: perfil público, curtidas, comentários, novidades =====
+create table if not exists public.perfil_publico (
+  uid uuid primary key references auth.users(id) on delete cascade,
+  nome text not null default '', bio text not null default '', foto text,
+  atualizado timestamptz not null default now(),
+  check (char_length(nome) <= 40), check (char_length(bio) <= 120),
+  check (foto is null or (foto like 'data:image/jpeg;base64,%' and char_length(foto) < 60000))
+);
+alter table public.perfil_publico enable row level security;
+drop policy if exists pp_ler on public.perfil_publico;
+create policy pp_ler on public.perfil_publico for select to authenticated using (exists (select 1 from public.membros m where m.uid = auth.uid()) or public.sou_admin());
+drop policy if exists pp_inserir on public.perfil_publico;
+create policy pp_inserir on public.perfil_publico for insert to authenticated with check (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid()));
+drop policy if exists pp_mudar on public.perfil_publico;
+create policy pp_mudar on public.perfil_publico for update to authenticated using (uid = auth.uid()) with check (uid = auth.uid());
+revoke all on public.perfil_publico from anon;
+grant select, insert, update on public.perfil_publico to authenticated;
+
+create table if not exists public.curtidas (
+  post_id uuid not null references public.posts(id) on delete cascade,
+  uid uuid not null references auth.users(id) on delete cascade,
+  primary key (post_id, uid)
+);
+alter table public.curtidas enable row level security;
+drop policy if exists cur_ler on public.curtidas;
+create policy cur_ler on public.curtidas for select to authenticated using (exists (select 1 from public.membros m where m.uid = auth.uid()) or public.sou_admin());
+drop policy if exists cur_criar on public.curtidas;
+create policy cur_criar on public.curtidas for insert to authenticated with check (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid()));
+drop policy if exists cur_apagar on public.curtidas;
+create policy cur_apagar on public.curtidas for delete to authenticated using (uid = auth.uid());
+revoke all on public.curtidas from anon;
+grant select, insert, delete on public.curtidas to authenticated;
+
+create table if not exists public.comentarios (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.posts(id) on delete cascade,
+  uid uuid not null references auth.users(id) on delete cascade,
+  texto text not null, criado timestamptz not null default now(),
+  check (char_length(texto) between 1 and 200)
+);
+create index if not exists comentarios_post on public.comentarios (post_id, criado);
+alter table public.comentarios enable row level security;
+drop policy if exists com_ler on public.comentarios;
+create policy com_ler on public.comentarios for select to authenticated using (exists (select 1 from public.membros m where m.uid = auth.uid()) or public.sou_admin());
+drop policy if exists com_criar on public.comentarios;
+create policy com_criar on public.comentarios for insert to authenticated with check (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid()));
+drop policy if exists com_apagar on public.comentarios;
+create policy com_apagar on public.comentarios for delete to authenticated using (uid = auth.uid() or public.sou_admin());
+revoke all on public.comentarios from anon;
+grant select, insert, delete on public.comentarios to authenticated;
+
+create table if not exists public.novidades (
+  id uuid primary key default gen_random_uuid(),
+  titulo text not null, texto text not null, criado timestamptz not null default now(),
+  check (char_length(titulo) <= 80), check (char_length(texto) <= 600)
+);
+alter table public.novidades enable row level security;
+drop policy if exists nov_ler on public.novidades;
+create policy nov_ler on public.novidades for select to authenticated using (exists (select 1 from public.membros m where m.uid = auth.uid()) or public.sou_admin());
+drop policy if exists nov_escrever on public.novidades;
+create policy nov_escrever on public.novidades for all to authenticated using (public.sou_admin()) with check (public.sou_admin());
+revoke all on public.novidades from anon;
+grant select, insert, update, delete on public.novidades to authenticated;
+
+insert into public.novidades (titulo, texto, criado)
+select t, x, c from (values
+  ('Feed e perfil', 'Agora o app tem um feed: publique o card do seu treino com um texto curto, curta e comente os treinos da galera. Complete seu perfil com foto e bio em Perfil.', now()),
+  ('Cronômetro de treino', 'Toque em Iniciar treino e em Terminar quando acabar: o tempo total, com pausas, entra no card.', now() - interval '1 day'),
+  ('Evolução na página inicial', 'A aba Evolução mostra semana e mês, recordes, sequência e cards prontos para os Stories.', now() - interval '2 days')
+) v(t, x, c) where not exists (select 1 from public.novidades);
