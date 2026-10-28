@@ -102,3 +102,44 @@ create policy registros_remover on public.registros for delete to authenticated 
 -- o app só usa usuários logados: sem acesso para quem não está autenticado
 revoke all on public.config, public.admins, public.convidados, public.membros, public.perfis, public.registros from anon;
 grant select, insert, update, delete on public.config, public.admins, public.convidados, public.membros, public.perfis, public.registros to authenticated;
+
+-- ===== endurecimento (segurança) =====
+create or replace function public.bloqueia_nao_convidado() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.admins where lower(email) = lower(new.email))
+     or exists (select 1 from public.convidados where lower(email) = lower(new.email)) then
+    return new;
+  end if;
+  raise exception 'E-mail nao convidado';
+end $$;
+drop trigger if exists bloqueia_nao_convidado on auth.users;
+create trigger bloqueia_nao_convidado before insert on auth.users for each row execute function public.bloqueia_nao_convidado();
+
+create or replace function public.limita_membros() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  perform pg_advisory_xact_lock(7001);
+  if (select count(*) from public.membros) >= (select limite from public.config where id = 1) then
+    raise exception 'Vagas preenchidas';
+  end if;
+  return new;
+end $$;
+drop trigger if exists limita_membros on public.membros;
+create trigger limita_membros before insert on public.membros for each row execute function public.limita_membros();
+
+drop policy if exists perfis_ler on public.perfis;
+create policy perfis_ler on public.perfis for select to authenticated using ((uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid())) or public.sou_admin());
+drop policy if exists perfis_atualizar on public.perfis;
+create policy perfis_atualizar on public.perfis for update to authenticated using (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid())) with check (uid = auth.uid());
+drop policy if exists registros_ler on public.registros;
+create policy registros_ler on public.registros for select to authenticated using ((uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid())) or public.sou_admin());
+drop policy if exists registros_atualizar on public.registros;
+create policy registros_atualizar on public.registros for update to authenticated using (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid())) with check (uid = auth.uid());
+
+alter table public.perfis drop constraint if exists perfis_tam;
+alter table public.perfis add constraint perfis_tam check (pg_column_size(dados) < 200000);
+alter table public.registros drop constraint if exists registros_tam;
+alter table public.registros add constraint registros_tam check (pg_column_size(dados) < 100000);
+alter table public.membros drop constraint if exists membros_tam;
+alter table public.membros add constraint membros_tam check (pg_column_size(dados) < 2000);
