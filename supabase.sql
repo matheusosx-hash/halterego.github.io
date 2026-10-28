@@ -320,3 +320,50 @@ begin
 end $$;
 drop trigger if exists limita_comentarios on public.comentarios;
 create trigger limita_comentarios before insert on public.comentarios for each row execute function public.limita_comentarios();
+
+-- ===== perfil público automático, sugestões e vitrine (tela inicial) =====
+create or replace function public.cria_perfil_publico() returns trigger language plpgsql security definer set search_path = public as $$
+declare n text;
+begin
+  n := left(split_part(trim(coalesce(new.dados -> 'anamnese' ->> 'nome', '')), ' ', 1), 40);
+  insert into public.perfil_publico (uid, nome) values (new.uid, n)
+  on conflict (uid) do update set nome = excluded.nome where public.perfil_publico.nome = '' and excluded.nome <> '';
+  return new;
+end $$;
+drop trigger if exists cria_perfil_publico on public.perfis;
+create trigger cria_perfil_publico after insert or update on public.perfis for each row execute function public.cria_perfil_publico();
+
+create table if not exists public.sugestoes (
+  id uuid primary key default gen_random_uuid(),
+  uid uuid not null references auth.users(id) on delete cascade,
+  tipo text not null default 'melhoria' check (tipo in ('melhoria','bug','outro')),
+  texto text not null check (char_length(texto) between 3 and 600),
+  status text not null default 'nova' check (status in ('nova','vista','feita')),
+  criado timestamptz not null default now()
+);
+alter table public.sugestoes enable row level security;
+drop policy if exists sug_criar on public.sugestoes;
+create policy sug_criar on public.sugestoes for insert to authenticated with check (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid()));
+drop policy if exists sug_ler on public.sugestoes;
+create policy sug_ler on public.sugestoes for select to authenticated using (uid = auth.uid() or public.sou_admin());
+drop policy if exists sug_mudar on public.sugestoes;
+create policy sug_mudar on public.sugestoes for update to authenticated using (public.sou_admin()) with check (public.sou_admin());
+drop policy if exists sug_apagar on public.sugestoes;
+create policy sug_apagar on public.sugestoes for delete to authenticated using (public.sou_admin());
+revoke all on public.sugestoes from anon;
+grant select, insert, update, delete on public.sugestoes to authenticated;
+
+-- vitrine: só a publicação mais recente do administrador, aberta para quem ainda não tem conta
+create or replace function public.vitrine() returns json
+language sql stable security definer set search_path = public, auth as $$
+  select coalesce(json_agg(t), '[]'::json) from (
+    select p.id, coalesce(nullif(pp.nome, ''), nullif(p.nome, ''), 'HalterEGO') as nome, pp.foto, p.texto, p.imagem, p.criado,
+      (select count(*) from public.curtidas c where c.post_id = p.id) as curtidas,
+      (select count(*) from public.comentarios c where c.post_id = p.id) as comentarios
+    from public.posts p join auth.users u on u.id = p.uid left join public.perfil_publico pp on pp.uid = p.uid
+    where lower(u.email) in (select lower(email) from public.admins)
+    order by p.criado desc limit 1
+  ) t
+$$;
+revoke all on function public.vitrine() from public;
+grant execute on function public.vitrine() to anon, authenticated;
