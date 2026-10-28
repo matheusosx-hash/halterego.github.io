@@ -190,3 +190,39 @@ begin
 end $$;
 revoke all on function public.decidir_acesso(text, boolean) from public, anon;
 grant execute on function public.decidir_acesso(text, boolean) to authenticated;
+
+-- ===== feed (publicações de treino) =====
+create table if not exists public.posts (
+  id uuid primary key default gen_random_uuid(),
+  uid uuid not null references auth.users(id) on delete cascade,
+  nome text not null default '',
+  texto text not null default '',
+  imagem text not null,
+  criado timestamptz not null default now(),
+  check (char_length(texto) <= 200),
+  check (imagem like 'data:image/jpeg;base64,%' and char_length(imagem) < 400000)
+);
+create index if not exists posts_criado on public.posts (criado desc);
+alter table public.posts enable row level security;
+
+create or replace function public.posts_antes_de_inserir() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  new.nome := coalesce((select split_part(coalesce(dados->'anamnese'->>'nome', ''), ' ', 1) from public.perfis where uid = new.uid), '');
+  new.criado := now();
+  if (select count(*) from public.posts where uid = new.uid and criado > now() - interval '24 hours') >= 10 then
+    raise exception 'Limite de publicacoes por dia';
+  end if;
+  return new;
+end $$;
+drop trigger if exists posts_antes_de_inserir on public.posts;
+create trigger posts_antes_de_inserir before insert on public.posts for each row execute function public.posts_antes_de_inserir();
+
+drop policy if exists posts_ler on public.posts;
+create policy posts_ler on public.posts for select to authenticated using (exists (select 1 from public.membros m where m.uid = auth.uid()) or public.sou_admin());
+drop policy if exists posts_criar on public.posts;
+create policy posts_criar on public.posts for insert to authenticated with check (uid = auth.uid() and exists (select 1 from public.membros m where m.uid = auth.uid()));
+drop policy if exists posts_apagar on public.posts;
+create policy posts_apagar on public.posts for delete to authenticated using (uid = auth.uid() or public.sou_admin());
+revoke all on public.posts from anon;
+grant select, insert, delete on public.posts to authenticated;
